@@ -1,0 +1,7 @@
+[
+{
+  "directory": "/home/tanguypcr/Documents/Linux-C/HeenokoOS/build",
+  "command": "/usr/bin/gcc -g -o CMakeFiles/HeenokoOS.dir/main.c.o -c /home/tanguypcr/Documents/Linux-C/HeenokoOS/main.c",
+  "file": "/home/tanguypcr/Documents/Linux-C/HeenokoOS/main.c"
+}
+]

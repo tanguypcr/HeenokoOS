@@ -1,0 +1,3 @@
+/home/tanguypcr/Documents/Linux-C/HeenokoOS/build/CMakeFiles/HeenokoOS.dir
+/home/tanguypcr/Documents/Linux-C/HeenokoOS/build/CMakeFiles/edit_cache.dir
+/home/tanguypcr/Documents/Linux-C/HeenokoOS/build/CMakeFiles/rebuild_cache.dir
