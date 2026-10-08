@@ -53,3 +53,8 @@ dkms.conf
 
 # debug information files
 *.dwo
+
+# CLAUDE
+CLAUDE.md
+# Disque virtuel HeenokoOS
+data.bin
