@@ -16,3 +16,5 @@ add_executable(noyau noyau.c sgf_core.c disk.c)
 
 # monbash cherche le noyau à côté de son propre exécutable.
 add_dependencies(monbash noyau)
+
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
