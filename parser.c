@@ -1,8 +1,6 @@
-/*
- * parser.c — Découpage des lignes de commande et construction des requêtes.
- */
 #include "parser.h"
 
+/* <ctype.h> : fonctions de classification des caractères, ici isspace(). */
 #include <ctype.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -19,6 +17,8 @@ struct commande {
     const char *usage;
 };
 
+/* static devant une variable globale ou une fonction : elle n'est visible que dans ce
+   fichier. Le reste du programme n'utilise que parser_analyser() et parser_aide() */
 static const struct commande commandes[] = {
     { "ls",    OP_LS,    0, 2, "ls [-l] [chemin]" },
     { "cd",    OP_CD,    0, 1, "cd [chemin]" },
@@ -46,17 +46,15 @@ static int erreur(char *msg, size_t taille, const char *format, ...)
     return ANALYSE_ERREUR;
 }
 
-/*
- * Découpe `s` en mots dans `tampon`. Les guillemets simples ou doubles
- * regroupent un mot ; `>` et `>>` forment toujours un mot à part.
- * Renvoie le nombre de mots, -1 s'il y en a trop, -2 si un guillemet n'est pas fermé.
- */
 static int decouper(const char *s, char *tampon, char **mots, int max)
 {
     char *e = tampon;
     int   n = 0;
 
     for (;;) {
+        /* isspace() : vrai pour un caractère d'espacement (espace, tabulation, retour à la
+           ligne...). La conversion en unsigned char est exigée par la norme : un char négatif
+           (lettre accentuée) passé directement donnerait un comportement indéfini */
         while (isspace((unsigned char)*s))
             s++;
         if (!*s)
@@ -92,7 +90,10 @@ static int decouper(const char *s, char *tampon, char **mots, int max)
 
 static int copier_chemin(char *dst, const char *src, char *msg, size_t taille)
 {
+    /* strlen() : renvoie la longueur d'une chaîne, sans compter le '\0' final. On vérifie
+       que le chemin tient dans le tableau avant le strcpy(), pour éviter un débordement */
     if (strlen(src) >= TAILLE_CHEMIN)
+        /* %.40s : n'affiche que les 40 premiers caractères de la chaîne. */
         return erreur(msg, taille, "chemin trop long : %.40s...", src);
     strcpy(dst, src);
     return 0;
@@ -103,6 +104,7 @@ static int analyser_echo(char **args, int nb, struct requete *req, char *msg, si
     size_t len = 0;
     int    i;
 
+    /* strcmp() : compare deux chaînes et renvoie 0 si elles sont identiques */
     for (i = 0; i < nb && strcmp(args[i], ">") != 0 && strcmp(args[i], ">>") != 0; i++) {
         size_t l = strlen(args[i]);
 
@@ -110,6 +112,8 @@ static int analyser_echo(char **args, int nb, struct requete *req, char *msg, si
             return erreur(msg, taille, "echo : texte trop long (%d octets max)", TAILLE_DONNEES - 1);
         if (i > 0)
             req->donnees[len++] = ' ';
+        /* memcpy() : copie un nombre précis d'octets d'une zone mémoire vers une autre. Ici on
+           colle chaque mot à la suite du précédent, sans '\0' entre eux */
         memcpy(req->donnees + len, args[i], l);
         len += l;
     }
@@ -117,6 +121,8 @@ static int analyser_echo(char **args, int nb, struct requete *req, char *msg, si
     req->taille = (int)len;
 
     if (i < nb) {
+        /* |= : forme abrégée de req->options = req->options | OPT_... ; positionne un bit
+           d'option sans effacer les autres */
         req->options |= OPT_ECHO_FICHIER;
         if (strcmp(args[i], ">>") == 0)
             req->options |= OPT_ECHO_AJOUT;
@@ -165,6 +171,9 @@ int parser_analyser(const char *ligne, struct requete *req, char *msg, size_t ta
     memset(req, 0, sizeof *req);
     req->op = cmd->op;
     snprintf(req->ligne, sizeof req->ligne, "%s", ligne);
+    /* strcspn() : renvoie la position du premier caractère de la chaîne qui appartient à
+       l'ensemble donné. On y place un '\0' pour supprimer le retour à la ligne laissé par
+       fgets(). */
     req->ligne[strcspn(req->ligne, "\r\n")] = '\0';
 
     switch (cmd->op) {
@@ -188,6 +197,8 @@ int parser_analyser(const char *ligne, struct requete *req, char *msg, size_t ta
 
     case OP_CHMOD: {
         char *fin;
+        /* strtol() : convertit une chaîne en entier long dans la base choisie (ici 8, pour
+           lire un mode octal comme 755) */
         long  mode = strtol(args[0], &fin, 8);
 
         if (*fin || fin == args[0] || mode < 0 || mode > 0777)

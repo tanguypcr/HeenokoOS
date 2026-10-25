@@ -1,7 +1,3 @@
-/*
- * sgf_core.c — Implémentation du SGF : superbloc, inodes, indirection simple,
- * répertoires et primitives _my*.
- */
 #define _POSIX_C_SOURCE 200809L
 
 #include "sgf_core.h"
@@ -15,21 +11,18 @@
 static struct superbloc sb;
 static char cwd[TAILLE_CHEMIN] = "/";
 
-/* Table des fichiers ouverts, indexée par numéro d'inode. */
 static struct {
     int      ouvert;
     int      mode;
     uint32_t position;
 } ouverts[NB_INODES];
 
-/* ------------------------------------------------------------------ */
-/* Superbloc et carte d'allocation                                     */
-/* ------------------------------------------------------------------ */
-
 static int sync_superbloc(void)
 {
+    /* = {0} : initialise la première case et toutes les autres cases à 0 */
     uint8_t bloc[TAILLE_BLOC] = {0};
 
+    /* memcpy() : copie un nombre précis d'octets d'une zone mémoire vers une autre */
     memcpy(bloc, &sb, sizeof sb);
     return ecrire_bloc(0, bloc) < 0 ? ERR_ES : SGF_OK;
 }
@@ -47,7 +40,6 @@ static void marquer_bloc(uint32_t n, int occupe)
         sb.carte_blocs[n / 8] &= (uint8_t)~(1u << (n % 8));
 }
 
-/* Renvoie un bloc de données mis à zéro, ou 0 si le disque est plein. */
 static uint32_t allouer_bloc(void)
 {
     static const uint8_t zeros[TAILLE_BLOC];
@@ -72,10 +64,6 @@ static void liberer_bloc(uint32_t n)
         sb.blocs_libres++;
     }
 }
-
-/* ------------------------------------------------------------------ */
-/* Inodes                                                              */
-/* ------------------------------------------------------------------ */
 
 static int lire_inode(int ino, struct inode *in)
 {
@@ -123,7 +111,6 @@ static int allouer_inode(int type, int mode)
     return ERR_PLUS_INODES;
 }
 
-/* Libère tous les blocs (directs, indirects et bloc d'indirection) d'un inode. */
 static void liberer_blocs(struct inode *in)
 {
     for (int i = 0; i < NB_DIRECTS; i++) {
@@ -168,15 +155,6 @@ static int a_droit(const struct inode *in, int droit)
 #define DROIT_W 2
 #define DROIT_X 1
 
-/* ------------------------------------------------------------------ */
-/* Accès aux données : blocs directs et indirection simple             */
-/* ------------------------------------------------------------------ */
-
-/*
- * Traduit l'indice logique `idx` d'un bloc du fichier en numéro de bloc physique.
- * Si `allouer` est vrai, les blocs manquants (y compris le bloc d'indirection)
- * sont alloués ; l'appelant doit ensuite réécrire l'inode. Renvoie 0 si absent.
- */
 static uint32_t bloc_physique(struct inode *in, uint32_t idx, int allouer)
 {
     uint32_t table[NB_INDIRECTS];
@@ -236,7 +214,6 @@ static int lire_donnees(struct inode *in, uint32_t pos, void *tampon, int n)
     return lus;
 }
 
-/* Écrit dans les blocs de l'inode (alloués à la demande). L'appelant réécrit l'inode. */
 static int ecrire_donnees(struct inode *in, uint32_t pos, const void *tampon, int n)
 {
     uint8_t        bloc[TAILLE_BLOC];
@@ -270,11 +247,6 @@ static int ecrire_donnees(struct inode *in, uint32_t pos, const void *tampon, in
     return (ecrits == 0) ? ERR_DISQUE_PLEIN : ecrits;
 }
 
-/* ------------------------------------------------------------------ */
-/* Répertoires                                                         */
-/* ------------------------------------------------------------------ */
-
-/* Cherche `nom` dans le répertoire ; renvoie son inode et sa position dans le répertoire. */
 static int dir_chercher(int ino_rep, const char *nom, uint32_t *position)
 {
     struct inode      rep;
@@ -321,7 +293,6 @@ static int dir_ajouter(int ino_rep, const char *nom, int ino)
 
     if ((r = lire_inode(ino_rep, &rep)) < 0)
         return r;
-    /* Réutilise la première entrée libre, sinon ajoute en fin de répertoire. */
     for (pos = 0; pos + sizeof e <= rep.taille; pos += sizeof e) {
         if (lire_donnees(&rep, pos, &e, sizeof e) != sizeof e)
             return ERR_ES;
@@ -374,11 +345,6 @@ static int dir_est_vide(int ino_rep)
     return 1;
 }
 
-/* ------------------------------------------------------------------ */
-/* Chemins                                                             */
-/* ------------------------------------------------------------------ */
-
-/* Transforme un chemin quelconque en chemin absolu canonique (sans ".", ".." ni "//"). */
 static int normaliser(const char *chemin, char *sortie)
 {
     char  tmp[2 * TAILLE_CHEMIN];
@@ -392,6 +358,8 @@ static int normaliser(const char *chemin, char *sortie)
     else
         snprintf(tmp, sizeof tmp, "%s/%s", cwd, chemin);
 
+    /* strtok_r() : découpe une chaîne en morceaux séparés par l'un des caractères donnés
+       (ici '/') */
     for (mot = strtok_r(tmp, "/", &reste); mot; mot = strtok_r(NULL, "/", &reste)) {
         if (strcmp(mot, ".") == 0)
             continue;
@@ -420,7 +388,6 @@ static int normaliser(const char *chemin, char *sortie)
     return SGF_OK;
 }
 
-/* Parcourt l'arborescence depuis la racine pour un chemin absolu canonique. */
 static int resoudre_absolu(const char *absolu)
 {
     char  tmp[TAILLE_CHEMIN];
@@ -446,7 +413,6 @@ static int resoudre(const char *chemin)
     return resoudre_absolu(absolu);
 }
 
-/* Sépare un chemin absolu canonique en répertoire parent et nom final. */
 static void separer(const char *absolu, char *parent, char *nom)
 {
     const char *dernier = strrchr(absolu, '/');
@@ -465,7 +431,6 @@ static int nom_valide(const char *nom)
     return l > 0 && l < TAILLE_NOM && strcmp(nom, ".") != 0 && strcmp(nom, "..") != 0;
 }
 
-/* Vrai si `absolu` est `cwd` ou l'un de ses ancêtres. */
 static int contient_cwd(const char *absolu)
 {
     size_t l = strlen(absolu);
@@ -475,10 +440,6 @@ static int contient_cwd(const char *absolu)
     return strncmp(cwd, absolu, l) == 0 && (cwd[l] == '\0' || cwd[l] == '/');
 }
 
-/*
- * Prépare la création d'une entrée : calcule le parent et le nom final,
- * vérifie que le parent est un répertoire accessible en écriture.
- */
 static int preparer_creation(const char *chemin, char *nom, int *ino_parent)
 {
     char         absolu[TAILLE_CHEMIN], parent[TAILLE_CHEMIN];
@@ -500,10 +461,6 @@ static int preparer_creation(const char *chemin, char *nom, int *ino_parent)
         return ERR_DROITS;
     return SGF_OK;
 }
-
-/* ------------------------------------------------------------------ */
-/* Montage et formatage                                                */
-/* ------------------------------------------------------------------ */
 
 static int initialiser_repertoire(int ino, int ino_parent)
 {
@@ -579,10 +536,6 @@ void sgf_demonter(void)
     disk_fermer();
 }
 
-/* ------------------------------------------------------------------ */
-/* Primitives                                                          */
-/* ------------------------------------------------------------------ */
-
 int _mycreate(const char *nom, int mode)
 {
     char         base[TAILLE_CHEMIN];
@@ -594,7 +547,6 @@ int _mycreate(const char *nom, int mode)
 
     ino = dir_chercher(ino_parent, base, NULL);
     if (ino >= 0) {
-        /* Le fichier existe déjà : il est tronqué, comme avec creat(2). */
         if ((r = lire_inode(ino, &in)) < 0)
             return r;
         if (in.type == TYPE_REPERTOIRE)
@@ -674,7 +626,6 @@ int _mywrite(int ino, const void *tampon, int n)
     if ((r = lire_inode(ino, &in)) < 0)
         return r;
     ecrits = ecrire_donnees(&in, ouverts[ino].position, tampon, n);
-    /* L'inode est réécrit même en cas d'erreur : des blocs ont pu être alloués. */
     if ((r = ecrire_inode(ino, &in)) < 0)
         return r;
     if (ecrits > 0)
@@ -761,10 +712,6 @@ int _unlink(const char *nom)
     return SGF_OK;
 }
 
-/* ------------------------------------------------------------------ */
-/* Services complémentaires                                            */
-/* ------------------------------------------------------------------ */
-
 int sgf_cd(const char *chemin)
 {
     char         absolu[TAILLE_CHEMIN];
@@ -817,6 +764,8 @@ int sgf_lister(const char *chemin, sgf_rappel_liste rappel, void *ctx)
 
     if (rep.type != TYPE_REPERTOIRE) {
         separer(absolu, parent, base);
+        /* rappel est un pointeur de fonction (voir sgf_rappel_liste dans sgf_core.h) : cet
+           appel exécute la fonction fournie par le noyau */
         rappel(base, ino, &rep, ctx);
         return SGF_OK;
     }
@@ -854,7 +803,6 @@ int sgf_renommer(const char *source, const char *destination)
         return ERR_OCCUPE;
     separer(src, parent_src, base_src);
 
-    /* Déplacement dans un répertoire existant : on garde le nom d'origine. */
     ino_dst = resoudre_absolu(dst);
     if (ino_dst >= 0 && lire_inode(ino_dst, &in_dst) == 0 && in_dst.type == TYPE_REPERTOIRE) {
         l = strlen(dst);
@@ -866,7 +814,6 @@ int sgf_renommer(const char *source, const char *destination)
     if (ino_dst == ino_src)
         return SGF_OK;
 
-    /* Interdit de déplacer un répertoire dans sa propre descendance. */
     l = strlen(src);
     if (in_src.type == TYPE_REPERTOIRE && strncmp(dst, src, l) == 0 && dst[l] == '/')
         return ERR_CHEMIN;
@@ -888,7 +835,6 @@ int sgf_renommer(const char *source, const char *destination)
     if (!a_droit(&rep, DROIT_W | DROIT_X))
         return ERR_DROITS;
 
-    /* Une destination existante n'est écrasée que si ce sont deux fichiers. */
     if (ino_dst >= 0) {
         if ((r = lire_inode(ino_dst, &in_dst)) < 0)
             return r;

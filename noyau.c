@@ -1,17 +1,11 @@
-/*
- * noyau.c — Processus Noyau de HeenokoOS.
- *
- * Lancé par monbash via fork()/execvp() :
- *     noyau <fd_requetes> <fd_reponses> [disque]
- * Reçoit les requêtes du Shell sur un tube anonyme, les exécute sur le SGF
- * et envoie les résultats à l'Écran par la FIFO /tmp/heenok_screen_fifo.
- */
 #define _POSIX_C_SOURCE 200809L
 
 #include <errno.h>
 #include <fcntl.h>
+/* <pwd.h> : accès à la base des utilisateurs du système (getpwuid, struct passwd). */
 #include <pwd.h>
 #include <signal.h>
+/* <stdarg.h> : outils des fonctions à nombre variable d'arguments (va_list...), pour afficher(). */
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -21,6 +15,10 @@
 #include "common.h"
 #include "sgf_core.h"
 
+/* Séquences d'échappement ANSI (\033 = caractère ESC) : le terminal de l'Écran les
+   interprète comme des changements de couleur au lieu de les afficher. 1;33 = jaune gras,
+   1;31 = rouge, 1;34 = bleu, 1;32 = vert, 0 = retour à la normale. Placées côte à côte avec
+   une autre chaîne ("..." COULEUR_FIN "..."), elles sont concaténées par le compilateur. */
 #define COULEUR_INVITE  "\033[1;33m"
 #define COULEUR_ERREUR  "\033[1;31m"
 #define COULEUR_REP     "\033[1;34m"
@@ -30,10 +28,6 @@
 static int fd_ecran = -1;
 static int ecran_absent_signale = 0;
 static const char *nom_disque = DISQUE_DEFAUT;
-
-/* ------------------------------------------------------------------ */
-/* Sortie vers l'Écran                                                 */
-/* ------------------------------------------------------------------ */
 
 static int ecrire_complet(int fd, const void *tampon, size_t n)
 {
@@ -70,24 +64,28 @@ static int lire_complet(int fd, void *tampon, size_t n)
     return 0;
 }
 
-/*
- * Ouvre la FIFO sans bloquer : si l'Écran n'est pas lancé, open() échoue
- * (ENXIO) et l'affichage se replie sur la sortie standard du noyau.
- */
 static void ecran_connecter(void)
 {
     int fd;
 
     if (fd_ecran >= 0)
         return;
+    /* O_NONBLOCK : ouverture non bloquante. Avec O_NONBLOCK, si l'Écran
+       n'est pas lancé, open() échoue tout de suite (errno ENXIO) au lieu de bloquer le noyau :
+       on affiche alors dans le terminal du noyau */
     fd = open(FIFO_ECRAN, O_WRONLY | O_NONBLOCK);
     if (fd < 0) {
         if (!ecran_absent_signale) {
+            /* stderr : flux de sortie d'erreur, séparé de la sortie normale (stdout) */
             fprintf(stderr, "[noyau] Écran absent (%s) : affichage redirigé vers ce terminal.\n", FIFO_ECRAN);
             ecran_absent_signale = 1;
         }
         return;
     }
+    /* fcntl() : lit (F_GETFL) puis modifie (F_SETFL) les options d'un descripteur déjà
+       ouvert. & ~O_NONBLOCK retire le bit O_NONBLOCK (~ inverse tous les bits du masque) :
+       une fois la FIFO ouverte, on repasse en mode bloquant, pour que write() attende que
+       l'Écran ait lu au lieu d'échouer quand la FIFO est pleine */
     fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) & ~O_NONBLOCK);
     fd_ecran = fd;
     ecran_absent_signale = 0;
@@ -99,14 +97,19 @@ static void ecran_ecrire(const char *texte, size_t n)
     if (fd_ecran >= 0) {
         if (ecrire_complet(fd_ecran, texte, n) == 0)
             return;
-        /* L'Écran a été fermé : on se reconnectera à la prochaine sortie. */
         close(fd_ecran);
         fd_ecran = -1;
         ecran_connecter();
     }
+    /* STDOUT_FILENO : constante valant 1, le descripteur de la sortie standard */
     ecrire_complet(STDOUT_FILENO, texte, n);
 }
 
+/* Fonction variadique (« ... ») : elle s'utilise comme printf (un format puis un nombre
+   quelconque d'arguments). va_list / va_start / va_end parcourent ces arguments et
+   vsnprintf() les met en forme dans tampon, sans dépasser sa taille. Le texte obtenu part
+   ensuite vers l'Écran par la FIFO, ce que printf ne permet pas puisqu'il écrit
+   uniquement sur stdout */
 static void afficher(const char *format, ...)
 {
     char    tampon[4096];
@@ -130,10 +133,6 @@ static void afficher_erreur(const char *commande, const char *chemin, int code)
     else
         afficher(COULEUR_ERREUR "%s: %s" COULEUR_FIN "\n", commande, sgf_strerror(code));
 }
-
-/* ------------------------------------------------------------------ */
-/* Commandes                                                           */
-/* ------------------------------------------------------------------ */
 
 struct ctx_ls {
     int longue;
@@ -159,9 +158,14 @@ static void ls_entree(const char *nom, int ino, const struct inode *in, void *p)
     if (ctx->longue) {
         char           droits[11];
         char           proprio[16];
+        /* getpwuid() : cherche dans la base des utilisateurs (/etc/passwd) le compte
+           correspondant à un UID et renvoie une struct passwd dont le champ pw_name est le
+           nom de connexion */
         struct passwd *pw = getpwuid(in->uid);
 
         permissions(in, droits);
+        /* snprintf() : printf() vers une chaîne, limité à la taille donnée (pas de
+           débordement) */
         if (pw)
             snprintf(proprio, sizeof proprio, "%s", pw->pw_name);
         else
@@ -180,6 +184,8 @@ static int cmd_ls(const struct requete *req)
 
     if (ctx.longue)
         afficher("droits     ino proprio      taille nom\n");
+    /* ls_entree est passée en paramètre comme pointeur de fonction (voir sgf_rappel_liste
+       dans sgf_core.h) : sgf_lister() l'appellera pour chaque entrée, avec &ctx */
     r = sgf_lister(req->chemin[0] ? req->chemin : ".", ls_entree, &ctx);
     if (r < 0)
         return r;
@@ -241,16 +247,20 @@ static int cmd_cp(const struct requete *req)
     if (in_src.type == TYPE_REPERTOIRE)
         return ERR_EST_REPERTOIRE;
 
-    /* cp fichier repertoire/ : copie sous le même nom dans le répertoire. */
     snprintf(destination, sizeof destination, "%s", req->chemin2);
     ino_dst = sgf_stat(destination, &in_dst);
+
     if (ino_dst >= 0 && in_dst.type == TYPE_REPERTOIRE) {
+        /* strrchr() : renvoie un pointeur sur la DERNIÈRE occurrence d'un caractère dans une
+           chaîne (NULL si absent). Après le dernier '/' se trouve le nom du fichier source,
+           que l'on réutilise pour la copie dans le répertoire */
         const char *base = strrchr(req->chemin, '/');
 
         base = base ? base + 1 : req->chemin;
         snprintf(destination, sizeof destination, "%s/%s", req->chemin2, base);
         ino_dst = sgf_stat(destination, &in_dst);
     }
+
     if (strlen(destination) >= TAILLE_CHEMIN)
         return ERR_CHEMIN;
     if (ino_dst == ino_src)
@@ -262,6 +272,7 @@ static int cmd_cp(const struct requete *req)
         _myclose(ino_src);
         return ino_dst;
     }
+
     while ((n = _myread(ino_src, tampon, sizeof tampon)) > 0) {
         int ecrits = _mywrite(ino_dst, tampon, n);
 
@@ -274,6 +285,7 @@ static int cmd_cp(const struct requete *req)
             break;
         }
     }
+
     if (n < 0)
         r = n;
     _myclose(ino_src);
@@ -349,9 +361,11 @@ static void afficher_bling(void)
     afficher("  %s\n", verdict);
 }
 
-/* Exécute une requête ; renvoie 0 ou un code d'erreur SGF (déjà affiché). */
 static int traiter(const struct requete *req)
 {
+    /* Initialisation désignée ([OP_LS] = "ls") : chaque nom est rangé dans la case dont
+       l'indice est la constante de l'enum. Le tableau reste juste même si l'ordre de l'enum
+       change, et noms[req->op] donne directement le nom de la commande */
     static const char *noms[] = {
         [OP_LS] = "ls", [OP_CD] = "cd", [OP_PWD] = "pwd", [OP_CAT] = "cat",
         [OP_ECHO] = "echo", [OP_CP] = "cp", [OP_MV] = "mv", [OP_RM] = "rm",
@@ -391,10 +405,6 @@ static int traiter(const struct requete *req)
     return r;
 }
 
-/* ------------------------------------------------------------------ */
-/* Boucle principale                                                   */
-/* ------------------------------------------------------------------ */
-
 static int repondre(int fd, int statut)
 {
     struct reponse rep;
@@ -420,7 +430,7 @@ int main(int argc, char *argv[])
     if (argc > 3)
         nom_disque = argv[3];
 
-    /* Ctrl-C dans le terminal du Shell ne doit pas tuer le noyau. */
+    /* signal(sig, SIG_IGN) : forme simplifiée de sigaction() */
     signal(SIGINT, SIG_IGN);
     signal(SIGPIPE, SIG_IGN);
 

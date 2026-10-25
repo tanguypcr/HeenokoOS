@@ -1,13 +1,7 @@
-/*
- * monbash.c — Shell interactif de HeenokoOS.
- *
- * Crée les tubes anonymes, lance le noyau avec fork()/execvp(), puis lit les
- * commandes de l'utilisateur et transmet les requêtes au noyau.
- *     monbash [disque]        (par défaut : data.bin)
- */
 #define _POSIX_C_SOURCE 200809L
 
 #include <errno.h>
+/* <libgen.h> : fournit dirname(), qui extrait le répertoire d'un chemin. */
 #include <libgen.h>
 #include <signal.h>
 #include <stdio.h>
@@ -27,6 +21,9 @@ static int ecrire_complet(int fd, const void *tampon, size_t n)
         ssize_t r = write(fd, p, n);
 
         if (r < 0) {
+            /* EINTR : code errno signifiant « appel système interrompu par un signal » avant
+               d'avoir écrit quoi que ce soit. Ce n'est pas une vraie erreur : il suffit de
+               relancer write() */
             if (errno == EINTR)
                 continue;
             return -1;
@@ -54,14 +51,19 @@ static int lire_complet(int fd, void *tampon, size_t n)
     return 0;
 }
 
-/* Le noyau est cherché à côté de l'exécutable monbash. */
 static void chemin_noyau(char *sortie, size_t taille)
 {
     char    exe[TAILLE_CHEMIN];
+    /* readlink("/proc/self/exe") : sous Linux, /proc/self/exe est un lien symbolique vers
+       l'exécutable du processus courant ; readlink() lit la cible de ce lien (le chemin
+       complet de monbash), sans ajouter de '\0' final. On en déduit le dossier de monbash
+       pour y trouver le noyau, quel que soit le répertoire depuis lequel on lance le shell */
     ssize_t n = readlink("/proc/self/exe", exe, sizeof exe - 1);
 
     if (n > 0) {
         exe[n] = '\0';
+        /* snprintf() : printf() vers une chaîne, limité à la taille donnée (pas de
+           débordement). dirname() renvoie la partie « dossier » du chemin */
         snprintf(sortie, taille, "%s/noyau", dirname(exe));
     } else {
         snprintf(sortie, taille, "./noyau");
@@ -120,16 +122,25 @@ int main(int argc, char *argv[])
     int            fd_requetes, fd_reponses, interactif;
     pid_t          pid;
 
+    /* signal(sig, SIG_IGN) : forme simplifiée de sigaction() qui se contente de changer
+       l'action associée au signal, SIG_IGN signifie « ignorer ». On ignore SIGINT pour
+       qu'un Ctrl-C ne ferme pas brutalement le shell, et SIGPIPE pour que l'écriture dans
+       le tube d'un noyau mort renvoie une erreur (que l'on traite) au lieu de tuer monbash */
     signal(SIGINT, SIG_IGN);
     signal(SIGPIPE, SIG_IGN);
+    /* isatty() : vrai si le descripteur correspond à un terminal. STDIN_FILENO est le
+       descripteur 0 (l'entrée standard). Si les commandes arrivent d'un fichier ou d'un
+       tube (printf '...' | ./monbash), on n'affiche ni la bannière ni l'invite */
     interactif = isatty(STDIN_FILENO);
 
     pid = lancer_noyau(disque, &fd_requetes, &fd_reponses);
     if (pid < 0)
         return EXIT_FAILURE;
 
-    /* Le noyau confirme le montage du disque avant la première invite. */
     if (lire_complet(fd_reponses, &rep, sizeof rep) < 0 || rep.statut < 0) {
+        /* fprintf(stderr, ...) : stderr est le flux de sortie d'erreur, distinct de la
+           sortie normale (stdout). Les messages d'erreur restent ainsi visibles même si la
+           sortie standard est redirigée */
         fprintf(stderr, "monbash : le noyau n'a pas pu démarrer.\n");
         waitpid(pid, NULL, 0);
         return EXIT_FAILURE;
@@ -140,17 +151,29 @@ int main(int argc, char *argv[])
 
     for (;;) {
         if (interactif) {
+            /* \033[1;33m ... \033[0m : séquences d'échappement ANSI interprétées par le
+               terminal (\033 = caractère ESC). 1;33 passe le texte en jaune gras, 0 rétablit
+               l'affichage normal. Elles colorent l'invite */
             printf("\033[1;33mheenoko:%s$\033[0m ", cwd);
             fflush(stdout);
         }
+        /* fgets() : lit une ligne au clavier (jusqu'au '\n' inclus), sans jamais dépasser la
+           taille du tableau, contrairement à scanf("%s") qui s'arrête au premier espace et
+           peut déborder. Renvoie NULL en fin de fichier (Ctrl-D) */
         if (!fgets(ligne, sizeof ligne, stdin)) {
             if (interactif)
                 printf("\n");
             break;
         }
+        /* strchr() : cherche un caractère dans une chaîne. S'il n'y a pas de '\n', la ligne
+           était trop longue pour le tableau, feof() vérifie qu'on n'est pas simplement
+           arrivé à la fin de l'entrée */
         if (!strchr(ligne, '\n') && !feof(stdin)) {
             int c;
 
+            /* EOF : valeur spéciale renvoyée par getchar() en fin d'entrée. On vide le reste
+               de la ligne trop longue pour que la suite ne soit pas lue comme une nouvelle
+               commande */
             while ((c = getchar()) != '\n' && c != EOF)
                 ;
             fprintf(stderr, "monbash : ligne trop longue (%d caractères max)\n", TAILLE_LIGNE - 1);
@@ -167,6 +190,9 @@ int main(int argc, char *argv[])
             parser_aide();
             continue;
         case ANALYSE_QUITTER:
+            /* goto : saut vers l'étiquette fin. Un break placé dans ce switch ne ferait que
+               sortir du switch, pas de la boucle for. goto permet de quitter la boucle
+               directement pour exécuter la séquence d'arrêt du noyau */
             goto fin;
         case ANALYSE_REQUETE:
             break;
